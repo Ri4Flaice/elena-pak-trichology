@@ -105,25 +105,6 @@ h2 {
   font-size: 11px;
   color: var(--muted);
 }
-.brand-mark {
-  font-weight: 700;
-  font-size: 33px;
-  letter-spacing: -0.09em;
-  color: var(--accent-dark);
-}
-.brand-mark span {
-  color: #ad8266;
-}
-.brand-mark.small {
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  background: #e9dfcd;
-  border-radius: 13px;
-  font-size: 20px;
-  box-shadow: inset 0 0 0 1px #ddcfb9;
-}
 .page-shell {
   max-width: 1160px;
   margin: 0 auto;
@@ -619,6 +600,9 @@ td input[type="checkbox"] {
 .history-item.active {
   background: #f7f0e4;
 }
+.history-item.active {
+  box-shadow: inset 3px 0 0 #9b8066;
+}
 .history-item > span:first-child {
   display: grid;
   min-width: 180px;
@@ -653,8 +637,12 @@ footer {
   padding: 38px;
   box-shadow: var(--shadow);
 }
-.login-card .brand-mark {
+.login-brand {
   margin-bottom: 32px;
+  color: var(--accent-dark);
+  font-size: 22px;
+  font-weight: 750;
+  letter-spacing: -0.04em;
 }
 .login-card h1 {
   font-size: 32px;

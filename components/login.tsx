@@ -30,9 +30,7 @@ export function Login() {
   return (
     <main className="login-page">
       <div className="login-card">
-        <div className="brand-mark">
-          EP<span>•</span>
-        </div>
+        <div className="login-brand">Елена Пак</div>
         <p className="eyebrow">СЛУЖЕБНЫЙ КАБИНЕТ</p>
         <h1>Рассылки клиентам</h1>
         <p className="muted">

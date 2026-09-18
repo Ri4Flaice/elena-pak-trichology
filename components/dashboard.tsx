@@ -94,6 +94,10 @@ export function Dashboard() {
   const [previewPage, setPreviewPage] = useState(1);
   const [history, setHistory] = useState<Summary[]>([]);
   const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [openingCampaignId, setOpeningCampaignId] = useState<string | null>(
+    null,
+  );
+  const [historyError, setHistoryError] = useState("");
   const [reportSearch, setReportSearch] = useState("");
   const [reportPage, setReportPage] = useState(1);
   const [busy, setBusy] = useState(false);
@@ -101,6 +105,8 @@ export function Dashboard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const templateRef = useRef<HTMLTextAreaElement>(null);
+  const reportRef = useRef<HTMLElement>(null);
+  const scrollToCampaignIdRef = useRef<string | null>(null);
   const stopRef = useRef(false);
   const sendingRef = useRef(false);
 
@@ -184,6 +190,33 @@ export function Dashboard() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!campaign || scrollToCampaignIdRef.current !== campaign.id) return;
+    scrollToCampaignIdRef.current = null;
+    reportRef.current?.focus({ preventScroll: true });
+    reportRef.current?.scrollIntoView({ block: "start" });
+  }, [campaign]);
+
+  async function openCampaignFromHistory(id: string) {
+    setOpeningCampaignId(id);
+    setHistoryError("");
+    scrollToCampaignIdRef.current = id;
+    try {
+      await loadCampaign(id);
+      setReportSearch("");
+      setReportPage(1);
+    } catch (caught) {
+      scrollToCampaignIdRef.current = null;
+      setHistoryError(
+        caught instanceof Error
+          ? caught.message
+          : "Не удалось открыть рассылку",
+      );
+    } finally {
+      setOpeningCampaignId(null);
+    }
+  }
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -419,9 +452,6 @@ export function Dashboard() {
       <header className="topbar">
         <div className="topbar-inner">
           <div className="brand">
-            <div className="brand-mark small">
-              EP<span>•</span>
-            </div>
             <div>
               <strong>Елена Пак</strong>
               <small>Кабинет рассылок</small>
@@ -667,7 +697,12 @@ export function Dashboard() {
         )}
 
         {campaign && (
-          <section className="panel" aria-labelledby="report-heading">
+          <section
+            ref={reportRef}
+            tabIndex={-1}
+            className="panel"
+            aria-labelledby="report-heading"
+          >
             <div className="section-heading">
               <span className="step dark">04</span>
               <div>
@@ -825,6 +860,11 @@ export function Dashboard() {
               </p>
             </div>
           </div>
+          {historyError && (
+            <p className="error-text" role="alert">
+              {historyError}
+            </p>
+          )}
           {!history.length ? (
             <p className="empty">Рассылок пока нет.</p>
           ) : (
@@ -833,19 +873,9 @@ export function Dashboard() {
                 <button
                   key={item.id}
                   className={`history-item ${campaign?.id === item.id ? "active" : ""}`}
-                  onClick={async () => {
-                    setError("");
-                    try {
-                      await loadCampaign(item.id);
-                      setReportPage(1);
-                    } catch (caught) {
-                      setError(
-                        caught instanceof Error
-                          ? caught.message
-                          : "Не удалось открыть рассылку",
-                      );
-                    }
-                  }}
+                  disabled={openingCampaignId !== null}
+                  aria-pressed={campaign?.id === item.id}
+                  onClick={() => void openCampaignFromHistory(item.id)}
                 >
                   <span>
                     <strong>{item.fileName}</strong>
@@ -854,9 +884,15 @@ export function Dashboard() {
                     </small>
                   </span>
                   <span className="history-counts">
-                    {item.counts.ACCEPTED ?? 0} принято ·{" "}
-                    {item.counts.ERROR ?? 0} ошибок · {item.counts.PENDING ?? 0}{" "}
-                    ждут
+                    {openingCampaignId === item.id ? (
+                      "Открываем журнал…"
+                    ) : (
+                      <>
+                        {item.counts.ACCEPTED ?? 0} принято ·{" "}
+                        {item.counts.ERROR ?? 0} ошибок ·{" "}
+                        {item.counts.PENDING ?? 0} ждут
+                      </>
+                    )}
                   </span>
                   <ChevronRight size={18} />
                 </button>
