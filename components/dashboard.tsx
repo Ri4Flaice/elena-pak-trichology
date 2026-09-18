@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ChangeEvent,
 } from "react";
 import readExcelFile from "read-excel-file/browser";
@@ -61,6 +62,48 @@ type Summary = {
   counts: Record<string, number>;
 };
 const PAGE_SIZE = 10;
+const TEMPLATE_STORAGE_KEY = "elena-pak-mailer-template";
+const TEMPLATE_CHANGED_EVENT = "elena-pak-template-changed";
+let inMemoryTemplate: string | null = null;
+
+function getSavedTemplate() {
+  try {
+    return (
+      localStorage.getItem(TEMPLATE_STORAGE_KEY) ??
+      inMemoryTemplate ??
+      DEFAULT_TEMPLATE
+    );
+  } catch {
+    return inMemoryTemplate ?? DEFAULT_TEMPLATE;
+  }
+}
+
+function subscribeToTemplate(callback: () => void) {
+  function handleStorage(event: StorageEvent) {
+    if (event.key === TEMPLATE_STORAGE_KEY || event.key === null) {
+      inMemoryTemplate = event.newValue;
+      callback();
+    }
+  }
+
+  window.addEventListener("storage", handleStorage);
+  window.addEventListener(TEMPLATE_CHANGED_EVENT, callback);
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(TEMPLATE_CHANGED_EVENT, callback);
+  };
+}
+
+function saveTemplate(value: string) {
+  inMemoryTemplate = value;
+  try {
+    localStorage.setItem(TEMPLATE_STORAGE_KEY, value);
+  } catch {
+    // Редактирование остаётся доступным, если хранилище браузера заблокировано.
+  }
+  window.dispatchEvent(new Event(TEMPLATE_CHANGED_EVENT));
+}
+
 const STATUS_LABEL: Record<Status, string> = {
   PENDING: "Ожидает",
   SENDING: "Отправляется",
@@ -87,7 +130,11 @@ function csvCell(value: unknown) {
 export function Dashboard() {
   const [fileName, setFileName] = useState("");
   const [rows, setRows] = useState<ClientRow[]>([]);
-  const [template, setTemplate] = useState(DEFAULT_TEMPLATE);
+  const template = useSyncExternalStore(
+    subscribeToTemplate,
+    getSavedTemplate,
+    () => DEFAULT_TEMPLATE,
+  );
   const [selected, setSelected] = useState<number[]>([]);
   const [previewReady, setPreviewReady] = useState(false);
   const [previewSearch, setPreviewSearch] = useState("");
@@ -263,7 +310,7 @@ export function Dashboard() {
     const input = templateRef.current;
     const start = input?.selectionStart ?? template.length;
     const end = input?.selectionEnd ?? template.length;
-    setTemplate(`${template.slice(0, start)}${token}${template.slice(end)}`);
+    saveTemplate(`${template.slice(0, start)}${token}${template.slice(end)}`);
     setPreviewReady(false);
     requestAnimationFrame(() => {
       input?.focus();
@@ -527,7 +574,10 @@ export function Dashboard() {
             <span className="step">02</span>
             <div>
               <h2 id="template-heading">Подготовьте сообщение</h2>
-              <p>Переменные заменятся данными каждого клиента.</p>
+              <p>
+                Переменные заменятся данными каждого клиента. Шаблон сохраняется
+                в этом браузере автоматически.
+              </p>
             </div>
           </div>
           <div className="template-toolbar">
@@ -541,7 +591,7 @@ export function Dashboard() {
             ref={templateRef}
             value={template}
             onChange={(event) => {
-              setTemplate(event.target.value);
+              saveTemplate(event.target.value);
               setPreviewReady(false);
             }}
             rows={7}
