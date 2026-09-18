@@ -1,0 +1,11 @@
+node_modules/
+.next/
+.vercel/
+.env*
+!.env.example
+coverage/
+*.tsbuildinfo
+*.xlsx
+*.csv
+index.html
+greenHouse/

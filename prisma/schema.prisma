@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CampaignStatus {
+  CREATED
+  RUNNING
+  COMPLETED
+}
+
+enum RecipientStatus {
+  PENDING
+  SENDING
+  ACCEPTED
+  ERROR
+  UNKNOWN
+  SKIPPED
+}
+
+model Campaign {
+  id         String         @id @default(cuid())
+  fileName   String
+  template   String         @db.Text
+  status     CampaignStatus @default(CREATED)
+  leaseToken String?
+  leaseUntil DateTime?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  recipients Recipient[]
+
+  @@index([createdAt])
+}
+
+model Recipient {
+  id         String          @id @default(cuid())
+  campaignId String
+  rowNumber  Int
+  firstName  String
+  lastName   String
+  phone      String
+  message    String          @db.Text
+  status     RecipientStatus @default(PENDING)
+  error      String?         @db.Text
+  idMessage  String?
+  updatedAt  DateTime        @updatedAt
+  createdAt  DateTime        @default(now())
+  campaign   Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, rowNumber])
+  @@index([campaignId, status])
+}
+
+model LoginAttempt {
+  key       String   @id
+  count     Int      @default(0)
+  expiresAt DateTime
+}
