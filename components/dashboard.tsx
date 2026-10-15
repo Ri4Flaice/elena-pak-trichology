@@ -310,11 +310,16 @@ export function Dashboard() {
     const input = templateRef.current;
     const start = input?.selectionStart ?? template.length;
     const end = input?.selectionEnd ?? template.length;
+    const scrollTop = input?.scrollTop ?? 0;
+    const scrollLeft = input?.scrollLeft ?? 0;
     saveTemplate(`${template.slice(0, start)}${token}${template.slice(end)}`);
     setPreviewReady(false);
     requestAnimationFrame(() => {
-      input?.focus();
-      input?.setSelectionRange(start + token.length, start + token.length);
+      if (!input || templateRef.current !== input) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(start + token.length, start + token.length);
+      input.scrollTop = scrollTop;
+      input.scrollLeft = scrollLeft;
     });
   }
 
