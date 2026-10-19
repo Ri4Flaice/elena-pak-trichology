@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
   type ChangeEvent,
 } from "react";
-import readExcelFile from "read-excel-file/browser";
+import { readClientFile } from "@/lib/client-file";
 import {
   Check,
   ChevronLeft,
@@ -28,7 +28,6 @@ import {
 } from "lucide-react";
 import {
   DEFAULT_TEMPLATE,
-  extractClientRows,
   prepareClients,
   validateTemplate,
   type ClientRow,
@@ -266,25 +265,18 @@ export function Dashboard() {
   }
 
   async function upload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const input = event.currentTarget;
+    const file = input.files?.[0];
     if (!file) return;
     setError("");
     setNotice("");
     setPreviewReady(false);
     setRows([]);
     setSelected([]);
-    if (!file.name.toLowerCase().endsWith(".xlsx")) {
-      setError("Выберите файл Excel в формате .xlsx");
-      return;
-    }
+    setFileName("");
     setBusy(true);
     try {
-      const sheets = await readExcelFile(file);
-      const sheet = sheets.find((item) => item.sheet.trim() === "Клиенты");
-      if (!sheet) throw new Error("В файле не найден лист «Клиенты».");
-      const parsedRows = extractClientRows(sheet.data);
-      if (!parsedRows.length)
-        throw new Error("На листе «Клиенты» нет записей.");
+      const parsedRows = await readClientFile(file);
       setFileName(file.name);
       setRows(parsedRows);
       if (!validateTemplate(template))
@@ -302,7 +294,7 @@ export function Dashboard() {
       );
     } finally {
       setBusy(false);
-      event.target.value = "";
+      input.value = "";
     }
   }
 
@@ -560,14 +552,14 @@ export function Dashboard() {
           <label className="upload-area">
             <Upload size={23} />
             <span>
-              <strong>{fileName || "Выберите файл .xlsx"}</strong>
+              <strong>{fileName || "Выберите файл .xls или .xlsx"}</strong>
               <small>
                 Нужен лист «Клиенты» со столбцами «Фамилия», «Имя», «Телефон»
               </small>
             </span>
             <input
               type="file"
-              accept=".xlsx"
+              accept=".xls,.xlsx"
               onChange={upload}
               disabled={busy || sending}
             />

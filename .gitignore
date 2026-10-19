@@ -6,6 +6,7 @@ node_modules/
 coverage/
 *.tsbuildinfo
 *.xlsx
+*.xls
 *.csv
 index.html
 greenHouse/
