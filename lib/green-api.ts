@@ -20,21 +20,68 @@ function endpoint(method: string) {
   return `${base}/waInstance${instanceId()}/${method}/${token}`;
 }
 
+// Some mutating GreenAPI methods also use GET (e.g. clearMessagesQueue).
+// Retry only this explicit set of read-only checks, never sending/clearing.
+const RETRYABLE_READS = new Set([
+  "getSettings",
+  "getStateInstance",
+  "showMessagesQueue",
+]);
+
+function retryDelay(response: Response) {
+  const value = response.headers.get("retry-after");
+  const seconds = value ? Number(value) : NaN;
+  const delay = Number.isFinite(seconds)
+    ? seconds * 1000
+    : value
+      ? Date.parse(value) - Date.now()
+      : 1200;
+  return Math.max(1200, Number.isFinite(delay) ? delay : 1200);
+}
+
+function httpError(method: string, status: number) {
+  const explanation =
+    status === 404
+      ? ". Метод или инстанс недоступен: проверьте apiUrl и idInstance в кабинете GreenAPI; возможен сбой провайдера"
+      : status === 429
+        ? ". Превышена частота запросов API. Подождите перед продолжением"
+        : "";
+  // Do not include the request URL: it contains apiTokenInstance.
+  return `GreenAPI: ${method} вернул HTTP ${status}${explanation}`;
+}
+
 export async function greenRequest<T>(
   method: string,
   body?: unknown,
 ): Promise<T> {
-  const response = await fetch(endpoint(method), {
-    method: body === undefined ? "GET" : "POST",
-    headers: { "Content-Type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(25_000),
-    cache: "no-store",
-  }).catch(() => {
-    throw new Error("GreenAPI недоступен; отправка остановлена");
-  });
-  if (!response.ok) throw new Error(`GreenAPI вернул HTTP ${response.status}`);
-  return response.json();
+  const url = endpoint(method);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await fetch(url, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: AbortSignal.timeout(25_000),
+      cache: "no-store",
+    }).catch(() => {
+      throw new Error(`GreenAPI: ${method} недоступен; отправка остановлена`);
+    });
+    if (
+      response.status === 429 &&
+      attempt === 0 &&
+      body === undefined &&
+      RETRYABLE_READS.has(method)
+    ) {
+      const delay = retryDelay(response);
+      if (delay <= 10000) {
+        await response.body?.cancel();
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+    }
+    if (!response.ok) throw new Error(httpError(method, response.status));
+    return response.json();
+  }
+  throw new Error(`GreenAPI: ${method} не выполнен`);
 }
 
 export async function inspectInstance() {
@@ -70,7 +117,7 @@ export async function sendMessage(
       return {
         status:
           response.status >= 400 && response.status < 500 ? "ERROR" : "UNKNOWN",
-        error: `GreenAPI вернул HTTP ${response.status}`,
+        error: httpError("sendMessage", response.status),
         retryable: response.status === 429,
       };
     }
