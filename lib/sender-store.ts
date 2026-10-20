@@ -4,6 +4,20 @@ import { instanceId } from "./green-api";
 
 export type SenderTx = Prisma.TransactionClient;
 
+export const unconfirmedAttemptWhere: Prisma.SendAttemptWhereInput = {
+  OR: [
+    { outcome: { in: ["SENDING", "UNKNOWN"] } },
+    {
+      outcome: "ACCEPTED",
+      deliveryStatus: null,
+      // The migration marked old records with this prefix. They predate the
+      // webhook receiver and cannot be treated as currently in-flight sends.
+      // Keep their unknown delivery status and quota history unchanged.
+      NOT: { id: { startsWith: "legacy-" } },
+    },
+  ],
+};
+
 // Serialize all decisions to send, including STOP and campaign deletion.
 export async function senderTransaction<T>(
   fn: (tx: SenderTx, state: SenderState) => Promise<T>,
@@ -40,10 +54,7 @@ export async function outstandingAttempt(tx: SenderTx) {
   return tx.sendAttempt.findFirst({
     where: {
       instanceId: instanceId(),
-      OR: [
-        { outcome: { in: ["SENDING", "UNKNOWN"] } },
-        { outcome: "ACCEPTED", deliveryStatus: null },
-      ],
+      ...unconfirmedAttemptWhere,
     },
     orderBy: { reservedAt: "asc" },
   });

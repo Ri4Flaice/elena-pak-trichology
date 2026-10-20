@@ -32,6 +32,7 @@ import { sendNext, resumeCampaign, senderTransaction } from "../lib/sender";
 import { POST as createCampaign } from "../app/api/campaigns/route";
 import { DELETE as deleteCampaign } from "../app/api/campaigns/[id]/route";
 import { POST as retryErrors } from "../app/api/campaigns/[id]/retry/route";
+import { POST as controlCampaign } from "../app/api/campaigns/[id]/control/route";
 import {
   GET as getSettings,
   POST as updateSettings,
@@ -194,6 +195,106 @@ afterAll(async () => {
 }, 30000);
 
 describe("миграция и ограничения на реальных Prisma-запросах", () => {
+  it("импортированный ACCEPTED не блокирует новый запуск и сохраняет неизвестную доставку", async () => {
+    await client().sendAttempt.create({
+      data: {
+        id: "legacy-old-recipient",
+        instanceId: "123",
+        campaignId: "old-campaign",
+        recipientId: "old-recipient",
+        phone,
+        quotaDay: "2026-10-19",
+        outcome: "ACCEPTED",
+        idMessage: "old-message",
+        reservedAt: new Date("2026-10-19T06:00:00Z"),
+      },
+    });
+    await resumeCampaign("campaign");
+    expect((await sendNext("campaign")).processed).toBe(1);
+    const old = await client().sendAttempt.findUniqueOrThrow({
+      where: { id: "legacy-old-recipient" },
+    });
+    expect(old.deliveryStatus).toBeNull();
+    expect(old.outcome).toBe("ACCEPTED");
+    expect(await client().sendAttempt.count()).toBe(2);
+    const snapshot = await (
+      await getSettings(
+        new Request("https://mailer.test/api/green-api/settings"),
+      )
+    ).json();
+    expect(snapshot.used).toBe(1);
+  });
+  it("импортированный UNKNOWN по-прежнему блокирует запуск", async () => {
+    await client().sendAttempt.create({
+      data: {
+        id: "legacy-unknown",
+        instanceId: "123",
+        campaignId: "old",
+        recipientId: "old",
+        phone,
+        quotaDay: "2026-10-19",
+        outcome: "UNKNOWN",
+        reservedAt: now,
+      },
+    });
+    await expect(resumeCampaign("campaign")).rejects.toThrow(
+      "неподтверждённую",
+    );
+    expect(await client().sendAttempt.count()).toBe(1);
+  });
+  it("новый ACCEPTED без статуса не теряет защиту от следующей отправки", async () => {
+    await sendNext("campaign");
+    await expect(resumeCampaign("campaign")).rejects.toThrow(
+      "неподтверждённую",
+    );
+    expect((await sendNext("campaign")).processed).toBe(0);
+    expect(await client().sendAttempt.count()).toBe(1);
+  });
+  it("несовпадение секретов видно в журнале кампании, а секрет не попадает в ответ", async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    const wrongSecret = "another-private-webhook-secret-12345";
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/getSettings/"))
+        return Response.json({
+          webhookUrl: "https://mailer.test/api/green-api/webhook",
+          webhookUrlToken: `Bearer ${wrongSecret}`,
+          delaySendMessagesMilliseconds: 15000,
+        });
+      return original(input, init);
+    });
+    const response = await controlCampaign(
+      jsonRequest({ action: "resume" }),
+      context,
+    );
+    expect(response.status).toBe(409);
+    const result = await response.json();
+    expect(result.error).toContain("Секрет вебхука");
+    expect(JSON.stringify(result)).not.toContain(wrongSecret);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    const campaign = await client().campaign.findUniqueOrThrow({
+      where: { id: "campaign" },
+    });
+    expect(campaign.status).toBe("PAUSED");
+    expect(campaign.pauseReason).toBe(result.error);
+    expect(await client().sendAttempt.count()).toBe(0);
+  });
+  it("шаблонный Webhook URL не допускается к запуску", async () => {
+    vi.stubEnv(
+      "GREEN_API_WEBHOOK_URL",
+      "https://YOUR-DOMAIN/api/green-api/webhook",
+    );
+    try {
+      await expect(resumeCampaign("campaign")).rejects.toThrow(
+        "публичный HTTPS-адрес",
+      );
+      expect(await client().sendAttempt.count()).toBe(0);
+    } finally {
+      vi.stubEnv(
+        "GREEN_API_WEBHOOK_URL",
+        "https://mailer.test/api/green-api/webhook",
+      );
+    }
+  });
   it("сохраняет старую попытку и не выдумывает доставку", () => {
     expect(migrated).toEqual({
       status: "UNKNOWN",

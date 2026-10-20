@@ -29,17 +29,28 @@ export function webhookConfiguration() {
     throw new Error(
       "Задайте HTTPS GREEN_API_WEBHOOK_URL и GREEN_API_WEBHOOK_SECRET длиной от 32 символов",
     );
-  if (new URL(url).protocol !== "https:")
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:")
     throw new Error("Webhook URL должен использовать HTTPS");
+  if (["your-domain", "localhost", "127.0.0.1"].includes(parsed.hostname))
+    throw new Error(
+      "В GREEN_API_WEBHOOK_URL укажите публичный HTTPS-адрес приложения вместо шаблона или localhost",
+    );
   return { url, token };
 }
 
 export async function verifyInstanceSettings() {
   const { url, token } = webhookConfiguration();
   const settings = await greenRequest<Record<string, unknown>>("getSettings");
+  if (settings.webhookUrl !== url)
+    throw new Error(
+      "Webhook URL в инстансе GreenAPI отличается от GREEN_API_WEBHOOK_URL приложения. Примените настройки инстанса из этого кабинета",
+    );
+  if (settings.webhookUrlToken !== `Bearer ${token}`)
+    throw new Error(
+      "Секрет вебхука в GreenAPI не совпадает с GREEN_API_WEBHOOK_SECRET приложения. После изменения окружения выполните Redeploy и примените настройки инстанса из этого кабинета",
+    );
   if (
-    settings.webhookUrl !== url ||
-    settings.webhookUrlToken !== `Bearer ${token}` ||
     !Number.isFinite(Number(settings.delaySendMessagesMilliseconds)) ||
     Number(settings.delaySendMessagesMilliseconds) < 15000 ||
     [
@@ -50,7 +61,7 @@ export async function verifyInstanceSettings() {
     ].some((key) => settings[key] !== "yes")
   ) {
     throw new Error(
-      "Проверьте настройки GreenAPI: URL, секрет, задержка от 15000 мс и четыре типа вебхуков",
+      "Проверьте настройки GreenAPI: задержка от 15000 мс и четыре типа вебхуков",
     );
   }
 }

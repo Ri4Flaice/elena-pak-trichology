@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { requireAuth } from "@/lib/api";
 import { greenRequest, instanceId, inspectInstance } from "@/lib/green-api";
 import { localTime } from "@/lib/sending-policy";
+import { unconfirmedAttemptWhere } from "@/lib/sender-store";
 import {
   pauseSender,
   senderTransaction,
@@ -38,10 +39,7 @@ export async function GET(request: Request) {
       const waiting = await tx.sendAttempt.findMany({
         where: {
           instanceId: state.id,
-          OR: [
-            { outcome: { in: ["SENDING", "UNKNOWN"] } },
-            { outcome: "ACCEPTED", deliveryStatus: null },
-          ],
+          ...unconfirmedAttemptWhere,
         },
         orderBy: { reservedAt: "asc" },
         take: 20,

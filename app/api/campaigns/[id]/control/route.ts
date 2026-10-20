@@ -11,8 +11,10 @@ export async function POST(
   const denied = await requireAuth(request, true);
   if (denied) return denied;
   const { id } = await context.params;
+  let action: unknown;
   try {
     const body = await request.json();
+    action = body.action;
     if (body.action === "resume") await resumeCampaign(id);
     else if (body.action === "pause")
       await senderTransaction(async (tx, state) => {
@@ -36,12 +38,28 @@ export async function POST(
       );
     return NextResponse.json({ ok: true });
   } catch (error) {
+    const reason =
+      error instanceof Error ? error.message : "Не удалось изменить состояние";
+    if (action === "resume") {
+      try {
+        await senderTransaction(async (tx, state) => {
+          await tx.campaign.updateMany({
+            where: { id, status: { not: "COMPLETED" } },
+            data: { status: "PAUSED", pauseReason: reason },
+          });
+          if (state.activeCampaignId === id)
+            await tx.senderState.update({
+              where: { id: state.id },
+              data: { activeCampaignId: null },
+            });
+        });
+      } catch {
+        // Preserve the original error when the database itself is unavailable.
+      }
+    }
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Не удалось изменить состояние",
+        error: reason,
       },
       { status: 409 },
     );
