@@ -25,6 +25,8 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.10",
+    "@electric-sql/pglite-socket": "^0.2.13",
     "@types/node": "^22.10.7",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

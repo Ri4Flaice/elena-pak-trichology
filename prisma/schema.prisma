@@ -10,6 +10,7 @@ datasource db {
 enum CampaignStatus {
   CREATED
   RUNNING
+  PAUSED
   COMPLETED
 }
 
@@ -23,36 +24,112 @@ enum RecipientStatus {
 }
 
 model Campaign {
-  id         String         @id @default(cuid())
-  fileName   String
-  template   String         @db.Text
-  status     CampaignStatus @default(CREATED)
-  leaseToken String?
-  leaseUntil DateTime?
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-  recipients Recipient[]
+  id          String         @id @default(cuid())
+  fileName    String
+  template    String         @db.Text
+  status      CampaignStatus @default(CREATED)
+  pauseReason String?
+  leaseToken  String?
+  leaseUntil  DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  recipients  Recipient[]
 
   @@index([createdAt])
 }
 
 model Recipient {
-  id         String          @id @default(cuid())
-  campaignId String
-  rowNumber  Int
-  firstName  String
-  lastName   String
-  phone      String
-  message    String          @db.Text
-  status     RecipientStatus @default(PENDING)
-  error      String?         @db.Text
-  idMessage  String?
-  updatedAt  DateTime        @updatedAt
-  createdAt  DateTime        @default(now())
-  campaign   Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  id             String          @id @default(cuid())
+  campaignId     String
+  rowNumber      Int
+  firstName      String
+  lastName       String
+  phone          String
+  message        String          @db.Text
+  status         RecipientStatus @default(PENDING)
+  error          String?         @db.Text
+  idMessage      String?
+  deliveryStatus String?
+  updatedAt      DateTime        @updatedAt
+  createdAt      DateTime        @default(now())
+  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, rowNumber])
   @@index([campaignId, status])
+  @@index([idMessage])
+}
+
+// One row per configured GreenAPI instance; all senders lock this row.
+model SenderState {
+  id                String    @id
+  intervalMs        Int       @default(60000)
+  dailyLimit        Int       @default(50)
+  seriesLimit       Int       @default(25)
+  seriesPauseMs     Int       @default(1800000)
+  timeZone          String    @default("Asia/Qyzylorda")
+  startHour         Int       @default(10)
+  endHour           Int       @default(18)
+  nextAllowedAt     DateTime?
+  seriesCount       Int       @default(0)
+  activeCampaignId  String?
+  pauseReason       String?
+  stateInstance     String?
+  stateTimestamp    BigInt    @default(0)
+  settingsAppliedAt DateTime?
+  maintenanceUntil  DateTime?
+  maintenanceToken  String?
+  updatedAt         DateTime  @updatedAt
+}
+
+model ContactPreference {
+  phone         String    @id
+  consentAt     DateTime?
+  consentSource String?
+  optedOutAt    DateTime?
+  updatedAt     DateTime  @updatedAt
+}
+
+// Keep unknown @lid opt-outs too; never silently discard an unresolved STOP.
+model ChatIdentity {
+  chatId     String    @id
+  phone      String?
+  optedOutAt DateTime?
+
+  @@index([phone])
+}
+
+// No cascading foreign keys: deleting a campaign must not reset quotas/history.
+model SendAttempt {
+  id             String    @id @default(cuid())
+  instanceId     String
+  campaignId     String
+  recipientId    String
+  phone          String
+  quotaDay       String
+  outcome        String    @default("SENDING")
+  idMessage      String?
+  deliveryStatus String?
+  error          String?   @db.Text
+  retryable      Boolean   @default(false)
+  reviewNote     String?   @db.Text
+  reservedAt     DateTime  @default(now())
+  finishedAt     DateTime?
+
+  @@unique([instanceId, idMessage])
+  @@index([instanceId, quotaDay])
+  @@index([instanceId, outcome])
+  @@index([recipientId, reservedAt])
+}
+
+model GreenWebhookEvent {
+  id         String   @id
+  instanceId String
+  idMessage  String?
+  payload    Json
+  applied    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([instanceId, idMessage, applied])
 }
 
 model LoginAttempt {

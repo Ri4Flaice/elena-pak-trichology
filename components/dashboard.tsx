@@ -10,6 +10,11 @@ import {
   type ChangeEvent,
 } from "react";
 import { readClientFile } from "@/lib/client-file";
+import { SenderSettings } from "./sender-settings";
+import {
+  RECIPIENT_STATUS_LABEL as STATUS_LABEL,
+  deliveryLabel,
+} from "@/lib/message-status";
 import {
   Check,
   ChevronLeft,
@@ -33,8 +38,7 @@ import {
   type ClientRow,
 } from "@/lib/clients";
 
-type Status =
-  "PENDING" | "SENDING" | "ACCEPTED" | "ERROR" | "UNKNOWN" | "SKIPPED";
+type Status = keyof typeof STATUS_LABEL;
 type Recipient = {
   id: string;
   rowNumber: number;
@@ -45,11 +49,13 @@ type Recipient = {
   status: Status;
   error: string | null;
   idMessage: string | null;
+  deliveryStatus: string | null;
 };
 type Campaign = {
   id: string;
   fileName: string;
   status: string;
+  pauseReason: string | null;
   createdAt: string;
   recipients: Recipient[];
 };
@@ -103,15 +109,6 @@ function saveTemplate(value: string) {
   window.dispatchEvent(new Event(TEMPLATE_CHANGED_EVENT));
 }
 
-const STATUS_LABEL: Record<Status, string> = {
-  PENDING: "Ожидает",
-  SENDING: "Отправляется",
-  ACCEPTED: "Принято GreenAPI",
-  ERROR: "Ошибка",
-  UNKNOWN: "Результат неизвестен",
-  SKIPPED: "Пропущено",
-};
-
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, cache: "no-store" });
   const data = await response.json().catch(() => ({}));
@@ -135,6 +132,11 @@ export function Dashboard() {
     () => DEFAULT_TEMPLATE,
   );
   const [selected, setSelected] = useState<number[]>([]);
+  const [preferences, setPreferences] = useState<
+    Record<string, { consentAt: string | null; optedOutAt: string | null }>
+  >({});
+  const [consentRows, setConsentRows] = useState<number[]>([]);
+  const [consentSource, setConsentSource] = useState("");
   const [previewReady, setPreviewReady] = useState(false);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewPage, setPreviewPage] = useState(1);
@@ -166,6 +168,12 @@ export function Dashboard() {
     }
   }, [rows, template, templateError]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const eligibleRows = (prepared?.valid ?? []).filter(
+    (row) =>
+      !preferences[row.phone]?.optedOutAt &&
+      (preferences[row.phone]?.consentAt ||
+        consentRows.includes(row.rowNumber)),
+  );
   const filteredPreview = useMemo(
     () =>
       (prepared?.valid ?? []).filter((row) =>
@@ -215,6 +223,7 @@ export function Dashboard() {
       `/api/campaigns/${encodeURIComponent(id)}`,
     );
     setCampaign(result.campaign);
+    window.dispatchEvent(new Event("sender-updated"));
     return result.campaign;
   }, []);
 
@@ -273,18 +282,47 @@ export function Dashboard() {
     setPreviewReady(false);
     setRows([]);
     setSelected([]);
+    setConsentRows([]);
+    setPreferences({});
+    setConsentSource("");
     setFileName("");
     setBusy(true);
     try {
       const parsedRows = await readClientFile(file);
       setFileName(file.name);
       setRows(parsedRows);
-      if (!validateTemplate(template))
-        setSelected(
-          prepareClients(parsedRows, template).valid.map(
-            (row) => row.rowNumber,
+      if (!validateTemplate(template)) {
+        const valid = prepareClients(parsedRows, template).valid;
+        const { contacts } = await api<{
+          contacts: {
+            phone: string;
+            consentAt: string | null;
+            optedOutAt: string | null;
+          }[];
+        }>("/api/contacts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "lookup",
+            phones: valid.map((row) => row.phone),
+          }),
+        });
+        setPreferences(
+          Object.fromEntries(
+            contacts.map((contact) => [contact.phone, contact]),
           ),
         );
+        const allowed = new Set(
+          contacts
+            .filter((contact) => contact.consentAt && !contact.optedOutAt)
+            .map((contact) => contact.phone),
+        );
+        setSelected(
+          valid
+            .filter((row) => allowed.has(row.phone))
+            .map((row) => row.rowNumber),
+        );
+      }
       setNotice(`Файл загружен: ${parsedRows.length} заполненных строк.`);
     } catch (caught) {
       setError(
@@ -322,27 +360,49 @@ export function Dashboard() {
     setSending(true);
     setError("");
     try {
+      await api(`/api/campaigns/${encodeURIComponent(id)}/control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resume" }),
+      });
       for (;;) {
         if (stopRef.current) break;
         const result = await api<{
           done: boolean;
           processed: number;
-          sending: number;
+          manual?: boolean;
+          pauseReason?: string | null;
+          nextAllowedAt?: string | null;
         }>(`/api/campaigns/${encodeURIComponent(id)}/send-batch`, {
           method: "POST",
         });
         await loadCampaign(id);
         await loadHistory();
         if (result.done) {
-          setNotice("Обработка рассылки завершена.");
-          break;
-        }
-        if (!result.processed) {
           setNotice(
-            "Текущий пакет ещё обрабатывается. Повторите продолжение позже.",
+            result.pauseReason ||
+              "Все получатели обработаны. Доставка подтверждается отдельно в журнале.",
           );
           break;
         }
+        if (result.manual) {
+          setNotice(
+            result.pauseReason ||
+              "Отправка приостановлена. Продолжите вручную после проверки ограничений.",
+          );
+          break;
+        }
+        setNotice(result.pauseReason || "Ожидаем следующую отправку");
+        const waitUntil = result.nextAllowedAt
+          ? Math.max(
+              Date.now() + 2000,
+              new Date(result.nextAllowedAt).getTime(),
+            )
+          : Date.now() + 5000;
+        while (!stopRef.current && Date.now() < waitUntil)
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(1000, waitUntil - Date.now())),
+          );
       }
     } catch (caught) {
       setError(
@@ -376,6 +436,8 @@ export function Dashboard() {
           template,
           rows,
           selectedRowNumbers: selected,
+          consentRowNumbers: consentRows,
+          consentSource,
         }),
       });
       await loadCampaign(result.id);
@@ -401,11 +463,16 @@ export function Dashboard() {
     setBusy(true);
     setError("");
     try {
-      await api(`/api/campaigns/${campaign.id}/retry`, { method: "POST" });
+      const result = await api<{ count: number }>(
+        `/api/campaigns/${campaign.id}/retry`,
+        { method: "POST" },
+      );
       await loadCampaign(campaign.id);
       await loadHistory();
       setBusy(false);
-      void sendLoop(campaign.id);
+      setNotice(
+        `Подготовлено к повтору: ${result.count}. Для отправки нажмите «Продолжить».`,
+      );
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -453,6 +520,7 @@ export function Dashboard() {
       "Статус",
       "Ошибка",
       "ID GreenAPI",
+      "Доставка",
     ];
     const body = campaign.recipients.map((row) => [
       row.rowNumber,
@@ -463,6 +531,7 @@ export function Dashboard() {
       STATUS_LABEL[row.status],
       row.error ?? "",
       row.idMessage ?? "",
+      deliveryLabel(row.deliveryStatus),
     ]);
     const csv =
       "\ufeff" +
@@ -538,6 +607,7 @@ export function Dashboard() {
           </div>
         )}
 
+        <SenderSettings />
         <section className="panel" aria-labelledby="upload-heading">
           <div className="section-heading">
             <span className="step">01</span>
@@ -573,7 +643,8 @@ export function Dashboard() {
               <h2 id="template-heading">Подготовьте сообщение</h2>
               <p>
                 Переменные заменятся данными каждого клиента. Шаблон сохраняется
-                в этом браузере автоматически.
+                в этом браузере автоматически. Добавьте инструкцию отказа:
+                «Напишите СТОП, чтобы отказаться от сообщений».
               </p>
             </div>
           </div>
@@ -639,6 +710,45 @@ export function Dashboard() {
               </div>
             </div>
             <div className="table-tools">
+              <label className="consent-source">
+                Источник подтверждённого согласия
+                <input
+                  value={consentSource}
+                  maxLength={500}
+                  onChange={(event) => setConsentSource(event.target.value)}
+                  placeholder="Например: анкета клиента от 20.10.2026"
+                />
+              </label>
+              <button
+                className="text-button"
+                disabled={!consentSource.trim() || sending}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      "Подтверждаете наличие согласия на сообщения WhatsApp у всех клиентов этого файла, кроме ранее отписавшихся?",
+                    )
+                  )
+                    return;
+                  const allowed = prepared.valid.filter(
+                    (row) => !preferences[row.phone]?.optedOutAt,
+                  );
+                  setConsentRows(
+                    allowed
+                      .filter((row) => !preferences[row.phone]?.consentAt)
+                      .map((row) => row.rowNumber),
+                  );
+                  setSelected(allowed.map((row) => row.rowNumber));
+                }}
+              >
+                Подтвердить согласия для всего файла
+              </button>
+            </div>
+            <p className="muted">
+              Допущено по согласию: {eligibleRows.length}. Наличие телефона в
+              базе не означает согласие на рассылку. Отказавшиеся клиенты
+              исключаются автоматически.
+            </p>
+            <div className="table-tools">
               <label className="search">
                 <Search size={17} />
                 <input
@@ -654,7 +764,7 @@ export function Dashboard() {
                 <button
                   className="text-button"
                   onClick={() =>
-                    setSelected(prepared.valid.map((row) => row.rowNumber))
+                    setSelected(eligibleRows.map((row) => row.rowNumber))
                   }
                 >
                   Выбрать всех
@@ -671,6 +781,7 @@ export function Dashboard() {
                     <th>Выбор</th>
                     <th>Клиент</th>
                     <th>WhatsApp</th>
+                    <th>Согласие</th>
                     <th>Сообщение</th>
                   </tr>
                 </thead>
@@ -682,6 +793,11 @@ export function Dashboard() {
                           type="checkbox"
                           aria-label={`Выбрать ${row.firstName} ${row.lastName}`}
                           checked={selectedSet.has(row.rowNumber)}
+                          disabled={
+                            !!preferences[row.phone]?.optedOutAt ||
+                            (!preferences[row.phone]?.consentAt &&
+                              !consentRows.includes(row.rowNumber))
+                          }
                           onChange={() =>
                             setSelected((current) =>
                               current.includes(row.rowNumber)
@@ -698,6 +814,38 @@ export function Dashboard() {
                         <small>Строка {row.rowNumber}</small>
                       </td>
                       <td data-label="WhatsApp">+{row.phone}</td>
+                      <td data-label="Согласие">
+                        {preferences[row.phone]?.optedOutAt ? (
+                          "Отказ от рассылок"
+                        ) : preferences[row.phone]?.consentAt ? (
+                          "Подтверждено ранее"
+                        ) : (
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={consentRows.includes(row.rowNumber)}
+                              disabled={!consentSource.trim() || sending}
+                              onChange={(event) => {
+                                setConsentRows((current) =>
+                                  event.target.checked
+                                    ? [...current, row.rowNumber]
+                                    : current.filter(
+                                        (number) => number !== row.rowNumber,
+                                      ),
+                                );
+                                setSelected((current) =>
+                                  event.target.checked
+                                    ? [...new Set([...current, row.rowNumber])]
+                                    : current.filter(
+                                        (number) => number !== row.rowNumber,
+                                      ),
+                                );
+                              }}
+                            />{" "}
+                            Согласие подтверждено
+                          </label>
+                        )}
+                      </td>
                       <td data-label="Сообщение">
                         <span className="message-preview">{row.message}</span>
                       </td>
@@ -734,7 +882,12 @@ export function Dashboard() {
               </div>
               <button
                 className="primary-button"
-                disabled={!selected.length || busy || sending}
+                disabled={
+                  !selected.length ||
+                  busy ||
+                  sending ||
+                  (consentRows.length > 0 && !consentSource.trim())
+                }
                 onClick={start}
               >
                 <Play size={17} /> Начать рассылку
@@ -783,6 +936,20 @@ export function Dashboard() {
               </div>
             </div>
             <div className="report-actions">
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  void loadCampaign(campaign.id).catch((error) =>
+                    setError(
+                      error instanceof Error
+                        ? error.message
+                        : "Не удалось обновить статусы",
+                    ),
+                  )
+                }
+              >
+                Обновить статусы
+              </button>
               {((counts.PENDING ?? 0) > 0 || (counts.SENDING ?? 0) > 0) && (
                 <button
                   className="primary-button"
@@ -792,15 +959,30 @@ export function Dashboard() {
                   <Play size={16} /> Продолжить
                 </button>
               )}
-              {sending && (
+              {(sending || campaign.status === "RUNNING") && (
                 <button
                   className="secondary-button"
                   onClick={() => {
                     stopRef.current = true;
-                    setNotice("Остановим после текущего пакета.");
+                    void api(`/api/campaigns/${campaign.id}/control`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "pause" }),
+                    })
+                      .then(() => loadCampaign(campaign.id))
+                      .catch((error) =>
+                        setError(
+                          error instanceof Error
+                            ? error.message
+                            : "Не удалось остановить",
+                        ),
+                      );
+                    setNotice(
+                      "Новые отправки остановлены. Уже принятое GreenAPI сообщение ещё может уйти.",
+                    );
                   }}
                 >
-                  <Square size={16} /> Остановить после пакета
+                  <Square size={16} /> Приостановить
                 </button>
               )}
               {(counts.ERROR ?? 0) > 0 && (
@@ -829,6 +1011,44 @@ export function Dashboard() {
                 Отправка идёт. Не закрывайте вкладку.
               </p>
             )}
+            {campaign.pauseReason && (
+              <p role="status">Пауза: {campaign.pauseReason}</p>
+            )}
+            <p className="muted">
+              Доставка:{" "}
+              {
+                campaign.recipients.filter((row) =>
+                  ["sent", "delivered", "read"].includes(
+                    row.deliveryStatus ?? "",
+                  ),
+                ).length
+              }{" "}
+              отправлено,{" "}
+              {
+                campaign.recipients.filter((row) =>
+                  ["delivered", "read"].includes(row.deliveryStatus ?? ""),
+                ).length
+              }{" "}
+              доставлено,{" "}
+              {
+                campaign.recipients.filter(
+                  (row) => row.deliveryStatus === "read",
+                ).length
+              }{" "}
+              прочитано. Ошибок доставки:{" "}
+              {
+                campaign.recipients.filter((row) =>
+                  [
+                    "failed",
+                    "noAccount",
+                    "suspended",
+                    "yellowCard",
+                    "notInGroup",
+                  ].includes(row.deliveryStatus ?? ""),
+                ).length
+              }
+              .
+            </p>
             <div className="table-tools">
               <label className="search">
                 <Search size={17} />
@@ -871,11 +1091,45 @@ export function Dashboard() {
                         >
                           {STATUS_LABEL[row.status]}
                         </span>
+                        {row.deliveryStatus && (
+                          <small>{deliveryLabel(row.deliveryStatus)}</small>
+                        )}
                       </td>
                       <td data-label="Результат">
                         <span className="result-text">
                           {row.error ?? row.idMessage ?? "—"}
                         </span>
+                        <button
+                          className="text-button"
+                          disabled={busy}
+                          onClick={async () => {
+                            if (
+                              !window.confirm(
+                                `Исключить +${row.phone} из всех рассылок?`,
+                              )
+                            )
+                              return;
+                            try {
+                              await api("/api/contacts", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                  action: "opt-out",
+                                  phone: row.phone,
+                                }),
+                              });
+                              await loadCampaign(campaign.id);
+                            } catch (error) {
+                              setError(
+                                error instanceof Error
+                                  ? error.message
+                                  : "Не удалось сохранить отказ",
+                              );
+                            }
+                          }}
+                        >
+                          Отказ от рассылок
+                        </button>
                       </td>
                     </tr>
                   ))}

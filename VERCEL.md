@@ -37,16 +37,16 @@ git push -u origin main
 
 До первого **Deploy** добавьте в форме импорта или затем в **Project Settings → Environment Variables** следующие значения. В интерфейсе Vercel вводите имя и значение в отдельных полях, **без кавычек** из `.env.example`:
 
-| Name                    | Value                            | Где взять                                           |
-| ----------------------- | -------------------------------- | --------------------------------------------------- |
-| `DATABASE_URL`          | Полная строка `postgresql://...` | **Connect** в панели вашей новой базы Postgres/Neon |
-| `ADMIN_PASSWORD`        | Сложный пароль от 12 символов    | Придумайте для сотрудников                          |
-| `SESSION_SECRET`        | Случайная строка от 32 символов  | Сгенерируйте командой ниже                          |
-| `GREEN_API_URL`         | `apiUrl` инстанса                | Кабинет GreenAPI                                    |
-| `GREEN_API_ID_INSTANCE` | `idInstance`                     | Кабинет GreenAPI                                    |
-| `GREEN_API_TOKEN`       | `apiTokenInstance`               | Кабинет GreenAPI                                    |
-| `SEND_BATCH_SIZE`       | `5`                              | Необязательно; максимум 5                           |
-| `SEND_DELAY_MS`         | `700`                            | Необязательно; пауза в миллисекундах                |
+| Name                       | Value                                       | Где взять                                           |
+| -------------------------- | ------------------------------------------- | --------------------------------------------------- |
+| `DATABASE_URL`             | Полная строка `postgresql://...`            | **Connect** в панели вашей новой базы Postgres/Neon |
+| `ADMIN_PASSWORD`           | Сложный пароль от 12 символов               | Придумайте для сотрудников                          |
+| `SESSION_SECRET`           | Случайная строка от 32 символов             | Сгенерируйте командой ниже                          |
+| `GREEN_API_URL`            | `apiUrl` инстанса                           | Кабинет GreenAPI                                    |
+| `GREEN_API_ID_INSTANCE`    | `idInstance`                                | Кабинет GreenAPI                                    |
+| `GREEN_API_TOKEN`          | `apiTokenInstance`                          | Кабинет GreenAPI                                    |
+| `GREEN_API_WEBHOOK_URL`    | `https://YOUR-DOMAIN/api/green-api/webhook` | Публичный Production URL приложения                 |
+| `GREEN_API_WEBHOOK_SECRET` | Отдельный случайный секрет от 32 символов   | Генератор случайных секретов                        |
 
 Для `SESSION_SECRET` выполните локально:
 
