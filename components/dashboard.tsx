@@ -133,10 +133,8 @@ export function Dashboard() {
   );
   const [selected, setSelected] = useState<number[]>([]);
   const [preferences, setPreferences] = useState<
-    Record<string, { consentAt: string | null; optedOutAt: string | null }>
+    Record<string, { optedOutAt: string | null }>
   >({});
-  const [consentRows, setConsentRows] = useState<number[]>([]);
-  const [consentSource, setConsentSource] = useState("");
   const [previewReady, setPreviewReady] = useState(false);
   const [previewSearch, setPreviewSearch] = useState("");
   const [previewPage, setPreviewPage] = useState(1);
@@ -169,10 +167,7 @@ export function Dashboard() {
   }, [rows, template, templateError]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const eligibleRows = (prepared?.valid ?? []).filter(
-    (row) =>
-      !preferences[row.phone]?.optedOutAt &&
-      (preferences[row.phone]?.consentAt ||
-        consentRows.includes(row.rowNumber)),
+    (row) => !preferences[row.phone]?.optedOutAt,
   );
   const filteredPreview = useMemo(
     () =>
@@ -282,9 +277,7 @@ export function Dashboard() {
     setPreviewReady(false);
     setRows([]);
     setSelected([]);
-    setConsentRows([]);
     setPreferences({});
-    setConsentSource("");
     setFileName("");
     setBusy(true);
     try {
@@ -296,7 +289,6 @@ export function Dashboard() {
         const { contacts } = await api<{
           contacts: {
             phone: string;
-            consentAt: string | null;
             optedOutAt: string | null;
           }[];
         }>("/api/contacts", {
@@ -312,14 +304,14 @@ export function Dashboard() {
             contacts.map((contact) => [contact.phone, contact]),
           ),
         );
-        const allowed = new Set(
+        const optedOut = new Set(
           contacts
-            .filter((contact) => contact.consentAt && !contact.optedOutAt)
+            .filter((contact) => contact.optedOutAt)
             .map((contact) => contact.phone),
         );
         setSelected(
           valid
-            .filter((row) => allowed.has(row.phone))
+            .filter((row) => !optedOut.has(row.phone))
             .map((row) => row.rowNumber),
         );
       }
@@ -436,8 +428,6 @@ export function Dashboard() {
           template,
           rows,
           selectedRowNumbers: selected,
-          consentRowNumbers: consentRows,
-          consentSource,
         }),
       });
       await loadCampaign(result.id);
@@ -709,44 +699,9 @@ export function Dashboard() {
                 <span>Пропущено</span>
               </div>
             </div>
-            <div className="table-tools">
-              <label className="consent-source">
-                Источник подтверждённого согласия
-                <input
-                  value={consentSource}
-                  maxLength={500}
-                  onChange={(event) => setConsentSource(event.target.value)}
-                  placeholder="Например: анкета клиента от 20.10.2026"
-                />
-              </label>
-              <button
-                className="text-button"
-                disabled={!consentSource.trim() || sending}
-                onClick={() => {
-                  if (
-                    !window.confirm(
-                      "Подтверждаете наличие согласия на сообщения WhatsApp у всех клиентов этого файла, кроме ранее отписавшихся?",
-                    )
-                  )
-                    return;
-                  const allowed = prepared.valid.filter(
-                    (row) => !preferences[row.phone]?.optedOutAt,
-                  );
-                  setConsentRows(
-                    allowed
-                      .filter((row) => !preferences[row.phone]?.consentAt)
-                      .map((row) => row.rowNumber),
-                  );
-                  setSelected(allowed.map((row) => row.rowNumber));
-                }}
-              >
-                Подтвердить согласия для всего файла
-              </button>
-            </div>
             <p className="muted">
-              Допущено по согласию: {eligibleRows.length}. Наличие телефона в
-              базе не означает согласие на рассылку. Отказавшиеся клиенты
-              исключаются автоматически.
+              Доступно для отправки: {eligibleRows.length}. Ранее отказавшиеся
+              клиенты исключаются автоматически.
             </p>
             <div className="table-tools">
               <label className="search">
@@ -781,7 +736,6 @@ export function Dashboard() {
                     <th>Выбор</th>
                     <th>Клиент</th>
                     <th>WhatsApp</th>
-                    <th>Согласие</th>
                     <th>Сообщение</th>
                   </tr>
                 </thead>
@@ -793,11 +747,7 @@ export function Dashboard() {
                           type="checkbox"
                           aria-label={`Выбрать ${row.firstName} ${row.lastName}`}
                           checked={selectedSet.has(row.rowNumber)}
-                          disabled={
-                            !!preferences[row.phone]?.optedOutAt ||
-                            (!preferences[row.phone]?.consentAt &&
-                              !consentRows.includes(row.rowNumber))
-                          }
+                          disabled={!!preferences[row.phone]?.optedOutAt}
                           onChange={() =>
                             setSelected((current) =>
                               current.includes(row.rowNumber)
@@ -813,37 +763,10 @@ export function Dashboard() {
                         </strong>
                         <small>Строка {row.rowNumber}</small>
                       </td>
-                      <td data-label="WhatsApp">+{row.phone}</td>
-                      <td data-label="Согласие">
-                        {preferences[row.phone]?.optedOutAt ? (
-                          "Отказ от рассылок"
-                        ) : preferences[row.phone]?.consentAt ? (
-                          "Подтверждено ранее"
-                        ) : (
-                          <label>
-                            <input
-                              type="checkbox"
-                              checked={consentRows.includes(row.rowNumber)}
-                              disabled={!consentSource.trim() || sending}
-                              onChange={(event) => {
-                                setConsentRows((current) =>
-                                  event.target.checked
-                                    ? [...current, row.rowNumber]
-                                    : current.filter(
-                                        (number) => number !== row.rowNumber,
-                                      ),
-                                );
-                                setSelected((current) =>
-                                  event.target.checked
-                                    ? [...new Set([...current, row.rowNumber])]
-                                    : current.filter(
-                                        (number) => number !== row.rowNumber,
-                                      ),
-                                );
-                              }}
-                            />{" "}
-                            Согласие подтверждено
-                          </label>
+                      <td data-label="WhatsApp">
+                        +{row.phone}
+                        {preferences[row.phone]?.optedOutAt && (
+                          <small>Отказ от рассылок</small>
                         )}
                       </td>
                       <td data-label="Сообщение">
@@ -882,12 +805,7 @@ export function Dashboard() {
               </div>
               <button
                 className="primary-button"
-                disabled={
-                  !selected.length ||
-                  busy ||
-                  sending ||
-                  (consentRows.length > 0 && !consentSource.trim())
-                }
+                disabled={!selected.length || busy || sending}
                 onClick={start}
               >
                 <Play size={17} /> Начать рассылку

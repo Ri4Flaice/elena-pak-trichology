@@ -227,40 +227,23 @@ export async function sendNext(id: string) {
       orderBy: { rowNumber: "asc" },
       select: { id: true, phone: true },
     });
-    const preferences = await tx.contactPreference.findMany({
-      where: { phone: { in: candidates.map((row) => row.phone) } },
+    const optOuts = await tx.contactPreference.findMany({
+      where: {
+        phone: { in: candidates.map((row) => row.phone) },
+        optedOutAt: { not: null },
+      },
+      select: { phone: true },
     });
-    const allowed = new Set(
-      preferences
-        .filter((preference) => preference.consentAt && !preference.optedOutAt)
-        .map((preference) => preference.phone),
-    );
-    const optedOut = new Set(
-      preferences
-        .filter((preference) => preference.optedOutAt)
-        .map((preference) => preference.phone),
-    );
-    for (const [ids, error] of [
-      [
-        candidates
-          .filter((row) => optedOut.has(row.phone))
-          .map((row) => row.id),
-        "Отказ от рассылок",
-      ],
-      [
-        candidates
-          .filter((row) => !allowed.has(row.phone) && !optedOut.has(row.phone))
-          .map((row) => row.id),
-        "Нет подтверждённого согласия",
-      ],
-    ] as const) {
-      if (ids.length)
-        await tx.recipient.updateMany({
-          where: { id: { in: [...ids] } },
-          data: { status: "SKIPPED", error },
-        });
-    }
-    const candidate = candidates.find((row) => allowed.has(row.phone));
+    const optedOut = new Set(optOuts.map((contact) => contact.phone));
+    const excludedIds = candidates
+      .filter((row) => optedOut.has(row.phone))
+      .map((row) => row.id);
+    if (excludedIds.length)
+      await tx.recipient.updateMany({
+        where: { id: { in: excludedIds } },
+        data: { status: "SKIPPED", error: "Отказ от рассылок" },
+      });
+    const candidate = candidates.find((row) => !optedOut.has(row.phone));
     if (candidate) {
       const recipient = await tx.recipient.findUniqueOrThrow({
         where: { id: candidate.id },

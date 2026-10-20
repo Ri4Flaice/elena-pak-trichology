@@ -154,8 +154,6 @@ beforeEach(async () => {
   await client().contactPreference.createMany({
     data: [phone, "77771234568"].map((phone) => ({
       phone,
-      consentAt: now,
-      consentSource: "Анкета клиента",
     })),
   });
   vi.stubGlobal(
@@ -327,20 +325,31 @@ describe("миграция и ограничения на реальных Prism
     expect(await sendNext("campaign")).toMatchObject({ processed: 1 });
     expect(await client().sendAttempt.count()).toBe(2);
   });
-  it("не отправляет без согласия и после отказа, даже если кампания уже создана", async () => {
+  it("исключает отказ после создания кампании, но отправляет новому номеру без записи согласия", async () => {
     await client().contactPreference.update({
       where: { phone },
       data: { optedOutAt: now },
     });
-    await client().contactPreference.update({
+    await client().contactPreference.delete({
       where: { phone: "77771234568" },
-      data: { consentAt: null },
     });
     expect((await sendNext("campaign")).done).toBe(true);
-    expect(await client().sendAttempt.count()).toBe(0);
+    expect(await client().sendAttempt.count()).toBe(1);
     expect(
       await client().recipient.count({ where: { status: "SKIPPED" } }),
-    ).toBe(2);
+    ).toBe(1);
+    expect(
+      (
+        await client().recipient.findUniqueOrThrow({
+          where: { id: "recipient-3" },
+        })
+      ).status,
+    ).toBe("ACCEPTED");
+    expect(
+      await client().contactPreference.findUnique({
+        where: { phone: "77771234568" },
+      }),
+    ).toBeNull();
   });
   it("не разрешает параллельную другую кампанию", async () => {
     await client().campaign.create({
@@ -580,7 +589,7 @@ describe("миграция и ограничения на реальных Prism
     expect(JSON.stringify(snapshot)).not.toContain(secret);
     expect(JSON.stringify(snapshot)).not.toContain("test-token");
   });
-  it("импорт 800 клиентов сохраняет согласия массово, не снимая существующий отказ", async () => {
+  it("импорт 800 клиентов не требует согласий, не создаёт фиктивные записи и сохраняет отказ", async () => {
     await client().contactPreference.update({
       where: { phone },
       data: { optedOutAt: now },
@@ -597,8 +606,6 @@ describe("миграция и ограничения на реальных Prism
         template: "Здравствуйте, {{Имя}}",
         rows,
         selectedRowNumbers: rows.map((row) => row.rowNumber),
-        consentRowNumbers: rows.map((row) => row.rowNumber),
-        consentSource: "Анкеты с согласием на сообщения",
       }),
     );
     expect(response.status).toBe(201);
@@ -622,6 +629,95 @@ describe("миграция и ограничения на реальных Prism
         .optedOutAt,
     ).not.toBeNull();
   });
+  it("старые поля согласия игнорируются, история и отписка сохраняются при повторном импорте", async () => {
+    const historical = new Date("2026-09-18T06:00:00Z");
+    await client().contactPreference.update({
+      where: { phone },
+      data: { optedOutAt: now },
+    });
+    await client().contactPreference.update({
+      where: { phone: "77771234568" },
+      data: { consentAt: historical, consentSource: "Старый источник" },
+    });
+    const rows = [phone, "77771234568"].map((rawPhone, index) => ({
+      rowNumber: index + 2,
+      firstName: "Имя",
+      lastName: "Фамилия",
+      rawPhone,
+    }));
+    for (let index = 0; index < 2; index++) {
+      const response = await createCampaign(
+        jsonRequest({
+          fileName: "repeat.xlsx",
+          template: "Привет",
+          rows,
+          selectedRowNumbers: [2, 3],
+          consentRowNumbers: "ignored",
+          consentSource: { ignored: true },
+        }),
+      );
+      expect(response.status).toBe(201);
+      const { id } = await response.json();
+      expect(
+        await client().recipient.count({
+          where: { campaignId: id, status: "PENDING" },
+        }),
+      ).toBe(1);
+      expect(
+        await client().recipient.count({
+          where: {
+            campaignId: id,
+            status: "SKIPPED",
+            error: "Отказ от рассылок",
+          },
+        }),
+      ).toBe(1);
+    }
+    const saved = await client().contactPreference.findUniqueOrThrow({
+      where: { phone: "77771234568" },
+    });
+    expect(saved.consentAt).toEqual(historical);
+    expect(saved.consentSource).toBe("Старый источник");
+    expect(
+      (await client().contactPreference.findUniqueOrThrow({ where: { phone } }))
+        .optedOutAt,
+    ).toEqual(now);
+  });
+  it("старый SKIPPED из-за согласия не возвращается в очередь автоматически", async () => {
+    await client().recipient.updateMany({
+      where: { campaignId: "campaign" },
+      data: { status: "SKIPPED", error: "Нет подтверждённого согласия" },
+    });
+    expect((await sendNext("campaign")).done).toBe(true);
+    expect(await client().sendAttempt.count()).toBe(0);
+    expect(
+      await client().recipient.count({ where: { status: "SKIPPED" } }),
+    ).toBe(2);
+  });
+  it("отписка запрещает подготовку повторяемой ошибки", async () => {
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      String(input).includes("/sendMessage/")
+        ? new Response("", { status: 429 })
+        : original(input, init),
+    );
+    await sendNext("campaign");
+    await receiveGreenEvent({
+      ...event("stop-after-error", ""),
+      type: "incomingMessageReceived",
+      stop: true,
+    });
+    const response = await retryErrors(jsonRequest({}), context);
+    expect(await response.json()).toEqual({ count: 0 });
+    expect(
+      (
+        await client().recipient.findUniqueOrThrow({
+          where: { id: "recipient-2" },
+        })
+      ).status,
+    ).toBe("ERROR");
+    expect(await client().sendAttempt.count()).toBe(1);
+  });
   it("UNKNOWN нельзя подготовить к повтору кнопкой ошибок", async () => {
     await client().sendAttempt.create({
       data: {
@@ -638,7 +734,8 @@ describe("миграция и ограничения на реальных Prism
     expect(response.status).toBe(500);
     expect(await client().sendAttempt.count()).toBe(1);
   });
-  it("только проверенный повторяемый отказ подготавливается, но не отправляется кнопкой ошибок", async () => {
+  it("проверенный повторяемый отказ подготавливается без записи согласия, но не отправляется кнопкой ошибок", async () => {
+    await client().contactPreference.delete({ where: { phone } });
     const original = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) =>
       String(input).includes("/sendMessage/")

@@ -54,11 +54,6 @@ export async function POST(request: Request) {
     const template = typeof body.template === "string" ? body.template : "";
     const rows: unknown = body.rows;
     const selected: unknown = body.selectedRowNumbers;
-    const consentRows: unknown = body.consentRowNumbers ?? [];
-    const consentSource =
-      typeof body.consentSource === "string"
-        ? body.consentSource.trim().slice(0, 500)
-        : "";
     if (
       !fileName ||
       !Array.isArray(rows) ||
@@ -66,11 +61,7 @@ export async function POST(request: Request) {
       !rows.every(isClientRow) ||
       !Array.isArray(selected) ||
       selected.length > rows.length ||
-      !selected.every((value) => Number.isSafeInteger(value)) ||
-      !Array.isArray(consentRows) ||
-      consentRows.length > rows.length ||
-      !consentRows.every((value) => Number.isSafeInteger(value)) ||
-      (consentRows.length > 0 && !consentSource)
+      !selected.every((value) => Number.isSafeInteger(value))
     ) {
       return NextResponse.json(
         { error: "Некорректные данные файла" },
@@ -100,47 +91,20 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     const campaign = await senderTransaction(async (tx) => {
-      const confirmed = new Set<number>(consentRows as number[]);
-      const confirmedPhones = valid
-        .filter((row) => confirmed.has(row.rowNumber))
-        .map((row) => row.phone);
-      if (confirmedPhones.length) {
-        await tx.contactPreference.createMany({
-          data: confirmedPhones.map((phone) => ({
-            phone,
-            consentAt: new Date(),
-            consentSource,
-          })),
-          skipDuplicates: true,
-        });
-        await tx.contactPreference.updateMany({
-          where: {
-            phone: { in: confirmedPhones },
-            consentAt: null,
-            optedOutAt: null,
-          },
-          data: { consentAt: new Date(), consentSource },
-        });
-      }
-      const preferences = await tx.contactPreference.findMany({
-        where: { phone: { in: valid.map((row) => row.phone) } },
+      const optOuts = await tx.contactPreference.findMany({
+        where: {
+          phone: { in: valid.map((row) => row.phone) },
+          optedOutAt: { not: null },
+        },
+        select: { phone: true },
       });
-      const preferenceByPhone = new Map(
-        preferences.map((preference) => [preference.phone, preference]),
-      );
-      const eligible = new Set(
-        preferences
-          .filter((p) => p.consentAt && !p.optedOutAt)
-          .map((p) => p.phone),
-      );
+      const optedOut = new Set(optOuts.map((contact) => contact.phone));
       if (
         !valid.some(
-          (row) => selectedSet.has(row.rowNumber) && eligible.has(row.phone),
+          (row) => selectedSet.has(row.rowNumber) && !optedOut.has(row.phone),
         )
       )
-        throw new Error(
-          "Не выбраны клиенты с подтверждённым согласием на сообщения",
-        );
+        throw new Error("Все выбранные получатели отказались от рассылок");
       return tx.campaign.create({
         data: {
           fileName,
@@ -154,13 +118,11 @@ export async function POST(request: Request) {
                 phone: row.phone,
                 message: row.message,
                 status:
-                  selectedSet.has(row.rowNumber) && eligible.has(row.phone)
+                  selectedSet.has(row.rowNumber) && !optedOut.has(row.phone)
                     ? ("PENDING" as const)
                     : ("SKIPPED" as const),
-                error: !eligible.has(row.phone)
-                  ? preferenceByPhone.get(row.phone)?.optedOutAt
-                    ? "Отказ от рассылок"
-                    : "Нет подтверждённого согласия"
+                error: optedOut.has(row.phone)
+                  ? "Отказ от рассылок"
                   : selectedSet.has(row.rowNumber)
                     ? null
                     : "Исключён вручную",
@@ -184,7 +146,7 @@ export async function POST(request: Request) {
   } catch (error) {
     if (
       error instanceof Error &&
-      /шаблон|переменная|скобки|сообщени|согласи/i.test(error.message)
+      /шаблон|переменная|скобки|сообщени|отказ/i.test(error.message)
     ) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

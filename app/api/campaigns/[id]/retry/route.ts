@@ -34,8 +34,7 @@ export async function POST(request: Request, context: Context) {
         if (
           !latest?.retryable ||
           latest.outcome !== "ERROR" ||
-          !contact?.consentAt ||
-          contact.optedOutAt
+          contact?.optedOutAt
         )
           continue;
         count += (
